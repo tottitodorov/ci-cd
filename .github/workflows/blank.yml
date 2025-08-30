@@ -1,36 +1,54 @@
-# This is a basic workflow to help you get started with Actions
+name: Create Release (tag + full changelog)
 
-name: CI
-
-# Controls when the workflow will run
 on:
-  # Triggers the workflow on push or pull request events but only for the "main" branch
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
-
-  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "New version tag (e.g., v1.2.3)"
+        required: true
+        type: string
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+permissions:
+  contents: write  # required to create tags & releases with GITHUB_TOKEN
+
 jobs:
-  # This workflow contains a single job called "build"
-  build:
-    # The type of runner that the job will run on
+  release:
     runs-on: ubuntu-latest
 
-    # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # we need tags/history for the changelog
 
-      # Runs a single command using the runners shell
-      - name: Run a one-line script
-        run: echo Hello, world!
-
-      # Runs a set of commands using the runners shell
-      - name: Run a multi-line script
+      - name: Build release notes (all commits since previous tag)
+        id: notes
         run: |
-          echo Add other actions to build,
-          echo test, and deploy your project.
+          set -euo pipefail
+          TAG="${{ inputs.tag }}"
+          # Previous tag if any
+          LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          
+          {
+            echo "## Changes"
+            if [ -z "${LAST_TAG:-}" ]; then
+              # No previous tag → include full history
+              git log --pretty=format:"- %s (%h)"
+            else
+              # Commits since previous tag
+              git log "${LAST_TAG}..HEAD" --pretty=format:"- %s (%h)"
+              echo
+              echo "**Full diff**: https://github.com/${{ github.repository }}/compare/${LAST_TAG}...${TAG}"
+            fi
+          } > RELEASE_NOTES.md
+          
+          echo "last_tag=${LAST_TAG:-}" >> "$GITHUB_OUTPUT"
+
+      - name: Create tag & GitHub Release (with notes)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ inputs.tag }}" \
+            --title "${{ inputs.tag }}" \
+            --notes-file RELEASE_NOTES.md \
+            --target "${GITHUB_SHA}"
